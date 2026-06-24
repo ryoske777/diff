@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>문자 DIFF 비교</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root {
     --bg: #14161a;
@@ -52,8 +53,34 @@
   label.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
 
   .inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); }
-  .input-cell { display: flex; flex-direction: column; background: var(--bg); }
-  .input-cell .cap { padding: 10px 16px 6px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .5px; }
+  .input-cell { display: flex; flex-direction: column; background: var(--bg); position: relative; }
+  .input-cell .cap { padding: 10px 16px 6px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .5px; display: flex; align-items: center; gap: 8px; }
+  .input-cell .cap .file-btn {
+    margin-left: auto; font-size: 11px; padding: 3px 9px; font-weight: 500;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--accent);
+  }
+  .input-cell .cap .file-btn:hover { background: #2a313c; }
+  .file-tag {
+    display: none; align-items: center; gap: 6px; margin: 0 16px 4px;
+    font-size: 11px; font-family: var(--mono); color: var(--ins-text);
+    background: #17321f; border: 1px solid #2a4d34; border-radius: 6px; padding: 3px 8px; width: fit-content;
+  }
+  .file-tag.show { display: inline-flex; }
+  .file-tag .x { cursor: pointer; color: var(--muted); font-weight: 700; padding: 0 2px; }
+  .file-tag .x:hover { color: var(--del-text); }
+  .input-cell.dragover::after {
+    content: "파일을 놓으세요 (.xlsx .xls .csv .txt)";
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(91,157,255,.12); border: 2px dashed var(--accent); border-radius: 10px;
+    color: var(--accent); font-size: 14px; font-weight: 600; pointer-events: none;
+  }
+  .input-cell.parsing::after {
+    content: "파일 읽는 중...";
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(20,22,26,.85); color: var(--muted); font-size: 14px; pointer-events: none;
+  }
   textarea {
     min-height: 130px; resize: vertical; background: var(--panel); color: var(--text);
     border: none; padding: 14px 16px; font-family: var(--mono); font-size: 14px;
@@ -156,13 +183,21 @@
 </header>
 
 <section class="inputs">
-  <div class="input-cell">
-    <div class="cap">원본 (ORIGINAL)</div>
-    <textarea id="left" placeholder="원본 텍스트를 입력하세요..."></textarea>
+  <div class="input-cell" id="cellLeft">
+    <div class="cap">원본 (ORIGINAL)
+      <button class="file-btn" data-pick="left">파일 첨부</button>
+    </div>
+    <div class="file-tag" id="tagLeft"><span class="name"></span><span class="x" data-clearfile="left">✕</span></div>
+    <input type="file" id="fileLeft" accept=".xlsx,.xls,.csv,.txt,.tsv" hidden>
+    <textarea id="left" placeholder="원본 텍스트를 입력하거나 파일을 드래그하세요..."></textarea>
   </div>
-  <div class="input-cell">
-    <div class="cap">대조군 (COMPARED)</div>
-    <textarea id="right" placeholder="비교할 텍스트를 입력하세요..."></textarea>
+  <div class="input-cell" id="cellRight">
+    <div class="cap">대조군 (COMPARED)
+      <button class="file-btn" data-pick="right">파일 첨부</button>
+    </div>
+    <div class="file-tag" id="tagRight"><span class="name"></span><span class="x" data-clearfile="right">✕</span></div>
+    <input type="file" id="fileRight" accept=".xlsx,.xls,.csv,.txt,.tsv" hidden>
+    <textarea id="right" placeholder="비교할 텍스트를 입력하거나 파일을 드래그하세요..."></textarea>
   </div>
 </section>
 
@@ -488,6 +523,111 @@ $('#sampleBtn').addEventListener('click', ()=>{
   run();
 });
 document.addEventListener('keydown', e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='Enter') run(); });
+
+/* ================= 파일 첨부 (드래그앤드롭 + 버튼) ================= */
+function sheetToText(wb){
+  // 모든 시트를 TSV로. 시트가 여러 개면 시트명 헤더로 구분.
+  const parts=[];
+  wb.SheetNames.forEach(name=>{
+    const ws=wb.Sheets[name];
+    const tsv=XLSX.utils.sheet_to_csv(ws, {FS:'\t', blankrows:false});
+    if(wb.SheetNames.length>1) parts.push(`### [${name}] ###\n${tsv}`);
+    else parts.push(tsv);
+  });
+  return parts.join('\n\n').replace(/\r\n/g,'\n').replace(/\s+$/,'');
+}
+
+function parseFile(file){
+  return new Promise((resolve, reject)=>{
+    const name=file.name.toLowerCase();
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('파일을 읽지 못했습니다.'));
+    if(/\.(xlsx|xls)$/.test(name)){
+      reader.onload=e=>{
+        try{
+          const wb=XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+          resolve(sheetToText(wb));
+        }catch(err){ reject(new Error('엑셀 파싱 실패: '+err.message)); }
+      };
+      reader.readAsArrayBuffer(file);
+    } else if(/\.(csv|tsv)$/.test(name)){
+      reader.onload=e=>{
+        try{
+          const wb=XLSX.read(e.target.result, {type:'string'});
+          resolve(sheetToText(wb));
+        }catch(err){
+          // 파싱 실패하면 원문 그대로
+          resolve(String(e.target.result).replace(/\r\n/g,'\n'));
+        }
+      };
+      reader.readAsText(file, 'utf-8');
+    } else { // .txt 및 기타
+      reader.onload=e=>resolve(String(e.target.result).replace(/\r\n/g,'\n'));
+      reader.readAsText(file, 'utf-8');
+    }
+  });
+}
+
+async function handleFile(side, file){
+  if(!file) return;
+  const cell=$(side==='left'?'#cellLeft':'#cellRight');
+  cell.classList.remove('dragover');
+  cell.classList.add('parsing');
+  try{
+    const text=await parseFile(file);
+    $(side==='left'?'#left':'#right').value=text;
+    showFileTag(side, file.name);
+  }catch(err){
+    alert(err.message);
+  }finally{
+    cell.classList.remove('parsing');
+  }
+}
+
+function showFileTag(side, name){
+  const tag=$(side==='left'?'#tagLeft':'#tagRight');
+  tag.querySelector('.name').textContent='📄 '+name;
+  tag.classList.add('show');
+}
+function clearFileTag(side){
+  $(side==='left'?'#tagLeft':'#tagRight').classList.remove('show');
+  $(side==='left'?'#fileLeft':'#fileRight').value='';
+}
+
+// 버튼 → 파일 선택
+document.querySelectorAll('[data-pick]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const side=btn.dataset.pick;
+    $(side==='left'?'#fileLeft':'#fileRight').click();
+  });
+});
+$('#fileLeft').addEventListener('change', e=>handleFile('left', e.target.files[0]));
+$('#fileRight').addEventListener('change', e=>handleFile('right', e.target.files[0]));
+
+// 파일 태그 ✕
+document.querySelectorAll('[data-clearfile]').forEach(x=>{
+  x.addEventListener('click', ()=>clearFileTag(x.dataset.clearfile));
+});
+
+// 드래그앤드롭 (각 입력칸)
+['left','right'].forEach(side=>{
+  const cell=$(side==='left'?'#cellLeft':'#cellRight');
+  let depth=0;
+  cell.addEventListener('dragenter', e=>{ e.preventDefault(); depth++; cell.classList.add('dragover'); });
+  cell.addEventListener('dragover', e=>{ e.preventDefault(); e.dataTransfer.dropEffect='copy'; });
+  cell.addEventListener('dragleave', e=>{ e.preventDefault(); depth--; if(depth<=0){ depth=0; cell.classList.remove('dragover'); } });
+  cell.addEventListener('drop', e=>{
+    e.preventDefault(); depth=0; cell.classList.remove('dragover');
+    const file=e.dataTransfer.files && e.dataTransfer.files[0];
+    if(file) handleFile(side, file);
+  });
+});
+// 페이지 전체에 파일이 떨어지면 브라우저가 파일을 여는 것 방지
+window.addEventListener('dragover', e=>e.preventDefault());
+window.addEventListener('drop', e=>e.preventDefault());
+
+// 지우기 버튼 누르면 파일 태그도 정리
+$('#clearBtn').addEventListener('click', ()=>{ clearFileTag('left'); clearFileTag('right'); });
 </script>
 </body>
 </html>
