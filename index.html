@@ -68,6 +68,17 @@
   .file-tag.show { display: inline-flex; }
   .file-tag .x { cursor: pointer; color: var(--muted); font-weight: 700; padding: 0 2px; }
   .file-tag .x:hover { color: var(--del-text); }
+  .sheet-bar {
+    display: none; align-items: center; gap: 8px; margin: 0 16px 6px;
+  }
+  .sheet-bar.show { display: flex; }
+  .sheet-bar .sheet-label { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .5px; }
+  .sheet-select {
+    flex: 1; max-width: 280px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px;
+    font-size: 12px; font-family: var(--mono); outline: none; cursor: pointer;
+  }
+  .sheet-select:focus { border-color: var(--accent); }
   .input-cell.dragover::after {
     content: "파일을 놓으세요 (.xlsx .xls .csv .txt)";
     position: absolute; inset: 0; z-index: 5;
@@ -147,6 +158,7 @@
   .pane[hidden] { display: none; }
   .pane-title { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .5px; padding: 14px 24px 10px; }
   .pane-scroll {
+    position: relative;
     max-height: 60vh; overflow-y: auto; padding: 0 24px 24px;
     font-family: var(--mono); font-size: 14px; line-height: 1.9;
     white-space: pre-wrap; word-break: break-word;
@@ -188,6 +200,10 @@
       <button class="file-btn" data-pick="left">파일 첨부</button>
     </div>
     <div class="file-tag" id="tagLeft"><span class="name"></span><span class="x" data-clearfile="left">✕</span></div>
+    <div class="sheet-bar" id="sheetBarLeft">
+      <span class="sheet-label">시트</span>
+      <select class="sheet-select" id="sheetSelLeft"></select>
+    </div>
     <input type="file" id="fileLeft" accept=".xlsx,.xls,.csv,.txt,.tsv" hidden>
     <textarea id="left" placeholder="원본 텍스트를 입력하거나 파일을 드래그하세요..."></textarea>
   </div>
@@ -196,6 +212,10 @@
       <button class="file-btn" data-pick="right">파일 첨부</button>
     </div>
     <div class="file-tag" id="tagRight"><span class="name"></span><span class="x" data-clearfile="right">✕</span></div>
+    <div class="sheet-bar" id="sheetBarRight">
+      <span class="sheet-label">시트</span>
+      <select class="sheet-select" id="sheetSelRight"></select>
+    </div>
     <input type="file" id="fileRight" accept=".xlsx,.xls,.csv,.txt,.tsv" hidden>
     <textarea id="right" placeholder="비교할 텍스트를 입력하거나 파일을 드래그하세요..."></textarea>
   </div>
@@ -482,29 +502,51 @@ function bindEvents(){
   $('#showRight').addEventListener('change', ()=>{ if($('#showRight').checked) ensurePane('right'); updatePanesLayout(); });
 }
 
+// 패널 컨테이너 '내부'에서만 스크롤 → 대상 chunk 를 패널 맨 위로.
+// getBoundingClientRect 로 컨테이너 대비 실제 상대 위치를 구한다(offsetParent 의존 X).
+function scrollChunkIntoPane(pane, el){
+  const PAD = 8;
+  const pr = pane.getBoundingClientRect();
+  const er = el.getBoundingClientRect();
+  const delta = (er.top - pr.top) - PAD; // 현재 스크롤 기준, 위로 얼마나 올려야 하는지
+  const target = pane.scrollTop + delta;
+  const max = pane.scrollHeight - pane.clientHeight;
+  pane.scrollTo({ top: Math.max(0, Math.min(target, max)), behavior:'smooth' });
+}
+
 function jumpToDiff(d){
-  let sl=$('#showLeft').checked, sr=$('#showRight').checked;
-  if(!sl && !sr){
-    if(d.rightId){ $('#showRight').checked=true; ensurePane('right'); }
-    else { $('#showLeft').checked=true; ensurePane('left'); }
-    updatePanesLayout();
-    sl=$('#showLeft').checked; sr=$('#showRight').checked;
-  } else {
-    if(sl) ensurePane('left');
-    if(sr) ensurePane('right');
-  }
-  const ids=[];
-  if(sl && d.leftId) ids.push(d.leftId);
-  if(sr && d.rightId) ids.push(d.rightId);
-  if(!ids.length){ const t=d.rightId||d.leftId; if(t) ids.push(t); }
+  // 켜져있지 않으면 양쪽 모두 자동으로 켠다 → 두 패널 동일 위치로 정렬
+  if(!$('#showLeft').checked){ $('#showLeft').checked=true; }
+  if(!$('#showRight').checked){ $('#showRight').checked=true; }
+  ensurePane('left'); ensurePane('right');
+  updatePanesLayout();
 
   document.querySelectorAll('.chunk.flash').forEach(c=>c.classList.remove('flash'));
-  let first=true;
-  ids.forEach(id=>{
-    const el=document.getElementById(id);
-    if(!el) return;
-    if(first){ el.scrollIntoView({behavior:'smooth', block:'center'}); first=false; }
-    void el.offsetWidth; el.classList.add('flash');
+
+  const pairs=[
+    { paneId:'#leftPane',  chunkId:d.leftId },
+    { paneId:'#rightPane', chunkId:d.rightId }
+  ];
+  // 패널 블록 자체가 화면 밖이면 먼저 화면 안으로 (즉시 이동 → 측정 안정화)
+  const panes=$('#panes');
+  if(panes){
+    const r=panes.getBoundingClientRect();
+    if(r.top<0 || r.top>window.innerHeight*0.5){
+      panes.scrollIntoView({behavior:'auto', block:'start'});
+    }
+  }
+  // 레이아웃/페이지 스크롤 적용 후 각 패널 내부 스크롤
+  requestAnimationFrame(()=>{
+    requestAnimationFrame(()=>{
+      pairs.forEach(p=>{
+        if(!p.chunkId) return;
+        const el=document.getElementById(p.chunkId);
+        const pane=$(p.paneId);
+        if(!el || !pane) return;
+        scrollChunkIntoPane(pane, el);
+        void el.offsetWidth; el.classList.add('flash');
+      });
+    });
   });
 }
 
@@ -525,16 +567,28 @@ $('#sampleBtn').addEventListener('click', ()=>{
 document.addEventListener('keydown', e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='Enter') run(); });
 
 /* ================= 파일 첨부 (드래그앤드롭 + 버튼) ================= */
-function sheetToText(wb){
-  // 모든 시트를 TSV로. 시트가 여러 개면 시트명 헤더로 구분.
-  const parts=[];
-  wb.SheetNames.forEach(name=>{
-    const ws=wb.Sheets[name];
-    const tsv=XLSX.utils.sheet_to_csv(ws, {FS:'\t', blankrows:false});
-    if(wb.SheetNames.length>1) parts.push(`### [${name}] ###\n${tsv}`);
-    else parts.push(tsv);
-  });
-  return parts.join('\n\n').replace(/\r\n/g,'\n').replace(/\s+$/,'');
+// 워크북 캐시: 시트 선택을 위해 파싱 결과를 보관
+const WB = { left:null, right:null }; // {names:[], sheets:{name:tsv}} | null
+
+function sheetTsv(ws){
+  return XLSX.utils.sheet_to_csv(ws, {FS:'\t', blankrows:false}).replace(/\r\n/g,'\n').replace(/\s+$/,'');
+}
+
+// 워크북 → {names, sheets} 형태로 정규화
+function normalizeWb(wb){
+  const sheets={};
+  wb.SheetNames.forEach(n=>{ sheets[n]=sheetTsv(wb.Sheets[n]); });
+  return { names: wb.SheetNames.slice(), sheets };
+}
+
+// 선택된 시트(또는 전체)에 해당하는 텍스트 생성
+function wbToText(data, selected){
+  if(!data) return '';
+  if(selected==='__ALL__' || data.names.length===1){
+    if(data.names.length===1) return data.sheets[data.names[0]];
+    return data.names.map(n=>`### [${n}] ###\n${data.sheets[n]}`).join('\n\n');
+  }
+  return data.sheets[selected] ?? '';
 }
 
 function parseFile(file){
@@ -546,7 +600,7 @@ function parseFile(file){
       reader.onload=e=>{
         try{
           const wb=XLSX.read(new Uint8Array(e.target.result), {type:'array'});
-          resolve(sheetToText(wb));
+          resolve({ kind:'wb', data:normalizeWb(wb) });
         }catch(err){ reject(new Error('엑셀 파싱 실패: '+err.message)); }
       };
       reader.readAsArrayBuffer(file);
@@ -554,18 +608,39 @@ function parseFile(file){
       reader.onload=e=>{
         try{
           const wb=XLSX.read(e.target.result, {type:'string'});
-          resolve(sheetToText(wb));
+          resolve({ kind:'wb', data:normalizeWb(wb) });
         }catch(err){
-          // 파싱 실패하면 원문 그대로
-          resolve(String(e.target.result).replace(/\r\n/g,'\n'));
+          resolve({ kind:'text', text:String(e.target.result).replace(/\r\n/g,'\n') });
         }
       };
       reader.readAsText(file, 'utf-8');
-    } else { // .txt 및 기타
-      reader.onload=e=>resolve(String(e.target.result).replace(/\r\n/g,'\n'));
+    } else {
+      reader.onload=e=>resolve({ kind:'text', text:String(e.target.result).replace(/\r\n/g,'\n') });
       reader.readAsText(file, 'utf-8');
     }
   });
+}
+
+// 시트 선택 드롭다운 채우기
+function populateSheetSelect(side, data){
+  const bar=$(side==='left'?'#sheetBarLeft':'#sheetBarRight');
+  const sel=$(side==='left'?'#sheetSelLeft':'#sheetSelRight');
+  if(!data || data.names.length<=1){ bar.classList.remove('show'); sel.innerHTML=''; return; }
+  bar.classList.add('show');
+  const opts=[`<option value="__ALL__">전체 시트 (${data.names.length}개)</option>`]
+    .concat(data.names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`));
+  sel.innerHTML=opts.join('');
+  // 기본값: 첫 시트 (전체보다 시트 단위 비교가 직관적)
+  sel.value=data.names[0];
+}
+
+// 현재 선택에 맞춰 textarea 갱신
+function applySheetSelection(side){
+  const data=WB[side];
+  if(!data) return;
+  const sel=$(side==='left'?'#sheetSelLeft':'#sheetSelRight');
+  const chosen = data.names.length<=1 ? '__ALL__' : (sel.value||data.names[0]);
+  $(side==='left'?'#left':'#right').value=wbToText(data, chosen);
 }
 
 async function handleFile(side, file){
@@ -574,8 +649,18 @@ async function handleFile(side, file){
   cell.classList.remove('dragover');
   cell.classList.add('parsing');
   try{
-    const text=await parseFile(file);
-    $(side==='left'?'#left':'#right').value=text;
+    const res=await parseFile(file);
+    if(res.kind==='wb'){
+      WB[side]=res.data;
+      populateSheetSelect(side, res.data);
+      // 양쪽에 같은 시트명이 있으면 시트 자동 동기화 시도
+      autoSyncSheets(side);
+      applySheetSelection(side);
+    } else {
+      WB[side]=null;
+      populateSheetSelect(side, null);
+      $(side==='left'?'#left':'#right').value=res.text;
+    }
     showFileTag(side, file.name);
   }catch(err){
     alert(err.message);
@@ -583,6 +668,27 @@ async function handleFile(side, file){
     cell.classList.remove('parsing');
   }
 }
+
+// 한쪽 시트를 고르면, 반대쪽에 같은 이름 시트가 있으면 맞춰준다
+function autoSyncSheets(changedSide){
+  const other = changedSide==='left' ? 'right' : 'left';
+  const a=WB[changedSide], b=WB[other];
+  if(!a || !b || a.names.length<=1 || b.names.length<=1) return;
+  const selA=$(changedSide==='left'?'#sheetSelLeft':'#sheetSelRight');
+  const selB=$(other==='left'?'#sheetSelLeft':'#sheetSelRight');
+  const chosen=selA.value;
+  if(chosen && chosen!=='__ALL__' && b.sheets[chosen]!==undefined){
+    selB.value=chosen;
+    applySheetSelection(other);
+  } else if(chosen==='__ALL__'){
+    selB.value='__ALL__';
+    applySheetSelection(other);
+  }
+}
+
+// 드롭다운 변경 이벤트
+$('#sheetSelLeft').addEventListener('change', ()=>{ applySheetSelection('left'); autoSyncSheets('left'); });
+$('#sheetSelRight').addEventListener('change', ()=>{ applySheetSelection('right'); autoSyncSheets('right'); });
 
 function showFileTag(side, name){
   const tag=$(side==='left'?'#tagLeft':'#tagRight');
@@ -592,6 +698,10 @@ function showFileTag(side, name){
 function clearFileTag(side){
   $(side==='left'?'#tagLeft':'#tagRight').classList.remove('show');
   $(side==='left'?'#fileLeft':'#fileRight').value='';
+  WB[side]=null;
+  const bar=$(side==='left'?'#sheetBarLeft':'#sheetBarRight');
+  const sel=$(side==='left'?'#sheetSelLeft':'#sheetSelRight');
+  bar.classList.remove('show'); sel.innerHTML='';
 }
 
 // 버튼 → 파일 선택
